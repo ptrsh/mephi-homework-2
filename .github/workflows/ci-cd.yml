@@ -11,6 +11,7 @@ jobs:
     name: Build and Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-15-intel, macos-14]
 
@@ -26,8 +27,19 @@ jobs:
     - name: Run Unit Tests
       run: go test -v ./...
 
-    - name: Build Project
-      run: go build -v ./...
+    - name: Build Binary for Linux
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        # Собираем под Linux x64
+        GOOS=linux GOARCH=amd64 go build -o myapp main.go
+
+    - name: Upload Artifact
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-binary
+        path: myapp
+        retention-days: 1
 
   deploy:
     name: Deploy to VPS
@@ -36,31 +48,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - name: Download Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-binary
+        path: . 
 
-    - name: Build binary for Linux
-      run: |
-        GOOS=linux GOARCH=amd64 go build -o myapp main.go
+    - name: Fix permissions
+      run: chmod +x myapp
 
-    - name: Copy binary to server
+    - name: Copy binary to temp
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USERNAME }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         source: "myapp"
-        target: "/opt/myapp/"
-        overwrite: true
+        target: "/tmp/"
 
-    - name: Restart application via SSH
+    - name: Swap binary and restart
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USERNAME }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
+          echo "Starting deployment..."
+          
           pkill myapp || true
+          
+          mv /tmp/myapp /opt/myapp/myapp
+          
           chmod +x /opt/myapp/myapp
+          
           nohup /opt/myapp/myapp > /opt/myapp/app.log 2>&1 &
+          
           echo "Deployment successful!"
